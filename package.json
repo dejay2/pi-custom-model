@@ -1,6 +1,6 @@
 {
   "name": "pi-custom-model",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "type": "module",
   "description": "pi extension: easily add custom models with custom endpoints and API keys (/add-model wizard)",
   "license": "MIT",

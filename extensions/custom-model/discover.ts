@@ -205,11 +205,15 @@ export async function expandUnslothQuants(cfg: DiscoveryConfig, models: Discover
 		}
 		for (const v of variants) {
 			const size = formatGb(v.sizeBytes);
+			// A loaded repo only has ONE resident quant: Unsloth sets the catalog
+			// entry's `quant` to the resident one — only that variant is loaded.
+			const isLoaded = m.loaded === true && m.quant === v.quant;
 			out.push({
 				...m,
 				id: `${m.id}:${v.quant}`,
 				quant: v.quant,
-				displayName: `${m.displayName ?? m.id}:${v.quant}${size ? ` (${size})` : ""}${m.loaded ? " (loaded)" : ""}`,
+				loaded: isLoaded,
+				displayName: `${m.displayName ?? m.id}:${v.quant}${size ? ` (${size})` : ""}${isLoaded ? " (loaded)" : ""}`,
 			});
 		}
 	}

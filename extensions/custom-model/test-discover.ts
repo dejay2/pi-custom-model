@@ -191,7 +191,11 @@ await test("expandUnslothQuants: expands repos into per-quant entries (downloade
 		["org/model-a:UD-Q4_K_XL", "org/model-a:UD-Q8_0", "local-basename"],
 	);
 	assert.ok(out[0].displayName?.includes("15.0 GB"), `size shown, got: ${out[0].displayName}`);
-	assert.ok(out[0].displayName?.includes("(loaded)"), `loaded marker kept, got: ${out[0].displayName}`);
+	assert.ok(out[0].displayName?.includes("(loaded)"), `loaded marker on resident quant, got: ${out[0].displayName}`);
+	assert.equal(out[0].loaded, true);
+	// Only the resident quant is loaded — not every quant of the repo.
+	assert.ok(!out[1].displayName?.includes("(loaded)"), `no loaded marker on other quant, got: ${out[1].displayName}`);
+	assert.equal(out[1].loaded, false);
 	assert.equal(out[2].quant, "Q8_0");
 	await new Promise<void>((r) => mock.close(() => r()));
 });
