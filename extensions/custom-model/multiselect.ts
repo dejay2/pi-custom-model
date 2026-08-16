@@ -39,11 +39,13 @@ export class MultiSelect {
 		theme: MultiSelectTheme,
 		done: (result: string[] | null) => void,
 		match?: KeyMatcher,
+		preselected?: Iterable<number>,
 	) {
 		this.items = items;
 		this.maxVisible = maxVisible;
 		this.theme = theme;
 		this.done = done;
+		if (preselected) for (const i of preselected) this.selected.add(i);
 		// Fallback for tests: legacy escape sequences + raw printable chars.
 		this.match =
 			match ??

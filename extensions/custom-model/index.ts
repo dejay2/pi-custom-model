@@ -2,10 +2,9 @@
  * custom-model — easily add/remove custom models with custom endpoints.
  *
  * Commands:
- *   /add-model            Interactive wizard: provider, endpoint, API type,
- *                         API key (literal / $ENV_VAR / keyless), then the
- *                         model list is fetched from the endpoint and you
- *                         scope which models to add (multi-select).
+ *   /add-model            Pick an existing endpoint to re-scope its models
+ *                         (pre-checked multi-select, fetched fresh from the
+ *                         endpoint), or create a new endpoint inline.
  *                         Falls back to manual id entry when the endpoint
  *                         does not serve a model list.
  *   /add-model <provider> <baseUrl> <modelId[,more]> [api] [apiKey]
@@ -134,14 +133,6 @@ async function offerSwitch(
 // ---------------------------------------------------------------------------
 
 async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
-	// 1. Provider id
-	const providerId = (await ctx.ui.input("Provider ID — short slug for this endpoint", "e.g. ollama, lmstudio, my-proxy"))?.trim();
-	if (!providerId) return;
-	if (!PROVIDER_ID_RE.test(providerId)) {
-		ctx.ui.notify(`Invalid provider id "${providerId}". Use letters, digits, '-', '_', '.'.`, "error");
-		return;
-	}
-
 	let data: ModelsJson;
 	try {
 		data = readModelsJson();
@@ -150,15 +141,30 @@ async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 		return;
 	}
 
+	// 1. Endpoint: pick an existing one (re-scope its models) or create a new one
+	const NEW_ENDPOINT = "＋ New endpoint…";
+	const knownProviders = Object.keys(data.providers);
+	let providerId: string | undefined;
+	if (knownProviders.length > 0) {
+		const choice = await ctx.ui.select("Which endpoint?", [...knownProviders, NEW_ENDPOINT]);
+		if (!choice) return;
+		if (choice !== NEW_ENDPOINT) providerId = choice;
+	}
+	if (!providerId) {
+		providerId = (await ctx.ui.input("Provider ID — short slug for this endpoint", "e.g. ollama, lmstudio, my-proxy"))?.trim();
+		if (!providerId) return;
+		if (!PROVIDER_ID_RE.test(providerId)) {
+			ctx.ui.notify(`Invalid provider id "${providerId}". Use letters, digits, '-', '_', '.'.`, "error");
+			return;
+		}
+	}
+
 	const existing = data.providers[providerId];
 	let providerCfg: ProviderEntry;
 
 	if (existing) {
-		ctx.ui.notify(
-			`Provider "${providerId}" already exists in models.json — new models will be merged into it.`,
-			"info",
-		);
-		providerCfg = { models: [] };
+		// Carry the stored config through so scoping removals can't strand it.
+		providerCfg = { ...existing };
 	} else {
 		// 2. Base URL
 		const baseUrl = (await ctx.ui.input("Base URL of the endpoint", "e.g. http://localhost:11434/v1"))?.trim();
@@ -197,7 +203,7 @@ async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 			apiKey = "keyless"; // dummy: pi requires some auth value before listing models
 		}
 
-		providerCfg = { baseUrl, api, apiKey, models: [] };
+		providerCfg = { baseUrl, api, apiKey };
 	}
 
 	// 5. Model selection: discover from the endpoint, multi-select to scope.
@@ -221,6 +227,9 @@ async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 				models,
 			);
 			const labels = expanded.map((m) => m.displayName ?? m.id);
+			// Pre-check models already added to this provider so the picker reflects the current scope.
+			const existingIds = new Set((existing?.models ?? []).map((m) => m.id));
+			const preselected = expanded.flatMap((m, i) => (existingIds.has(m.id) ? [i] : []));
 			const chosen = await ctx.ui.custom<string[] | null>((tui, theme, _kb, done) => {
 				const ms = new MultiSelect(
 					labels,
@@ -234,6 +243,7 @@ async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 					},
 					done,
 					(data, keyId) => matchesKey(data, keyId as KeyId),
+					preselected,
 				);
 				return {
 					render: (w: number) => ms.render(w),
@@ -247,6 +257,19 @@ async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 			});
 			if (!chosen || chosen.length === 0) return;
 			picked = expanded.filter((m) => chosen.includes(m.displayName ?? m.id));
+
+			// Scoping: previously-added models that were deselected can be removed.
+			if (existing) {
+				const pickedIds = new Set(picked.map((m) => m.id));
+				const deselected = (existing.models ?? []).map((m) => m.id).filter((id) => !pickedIds.has(id));
+				if (deselected.length > 0) {
+					const rm = await ctx.ui.confirm(
+						"Remove deselected models?",
+						`Remove from "${providerId}":\n${deselected.join(", ")}`,
+					);
+					if (rm) removeModels(data, providerId, deselected);
+				}
+			}
 		} else {
 			ctx.ui.notify("Could not fetch a model list from the endpoint — enter model IDs manually.", "warning");
 			picked = [];
@@ -266,31 +289,47 @@ async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 		picked = ids.map((id) => ({ id }));
 	}
 
-	// 6. Reasoning + context window
-	const reasoning = await ctx.ui.confirm(
-		"Reasoning / thinking support?",
-		`Do ${picked.length > 1 ? "these models" : "this model"} support extended thinking?`,
-	);
-	// Only prompt when at least one picked model carries no discovered context window.
+	// 6. Reasoning + context window — only asked for newly-added models;
+	//    models already on the provider keep their configured settings.
+	const existingById = new Map((existing?.models ?? []).map((m) => [m.id, m]));
+	const hasNew = picked.some((m) => !existingById.has(m.id));
+	let reasoning = false;
 	let contextWindow: number | undefined;
-	if (picked.some((m) => !m.contextWindow)) {
-		const ctxRaw = (
-			await ctx.ui.input("Context window in tokens (optional)", "press Enter to keep discovered/default values")
-		)?.trim();
-		if (ctxRaw) {
-			const n = Number(ctxRaw);
-			if (!Number.isFinite(n) || n <= 0) {
-				ctx.ui.notify(`"${ctxRaw}" is not a valid token count.`, "error");
-				return;
+	if (hasNew) {
+		reasoning = await ctx.ui.confirm(
+			"Reasoning / thinking support?",
+			`Do ${picked.length > 1 ? "these models" : "this model"} support extended thinking?`,
+		);
+		// Only prompt when at least one picked model carries no discovered context window.
+		if (picked.some((m) => !m.contextWindow)) {
+			const ctxRaw = (
+				await ctx.ui.input("Context window in tokens (optional)", "press Enter to keep discovered/default values")
+			)?.trim();
+			if (ctxRaw) {
+				const n = Number(ctxRaw);
+				if (!Number.isFinite(n) || n <= 0) {
+					ctx.ui.notify(`"${ctxRaw}" is not a valid token count.`, "error");
+					return;
+				}
+				contextWindow = Math.round(n);
 			}
-			contextWindow = Math.round(n);
 		}
 	}
 
-	providerCfg.models = picked.map((m) => ({
-		...buildModel(m.id, reasoning, m.contextWindow ?? contextWindow),
-		...(m.maxTokens ? { maxTokens: m.maxTokens } : {}),
-	}));
+	providerCfg.models = picked.map((m) => {
+		if (existingById.has(m.id)) {
+			// Already configured: keep its settings, refresh discovered limits only.
+			return {
+				id: m.id,
+				...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
+				...(m.maxTokens ? { maxTokens: m.maxTokens } : {}),
+			};
+		}
+		return {
+			...buildModel(m.id, reasoning, m.contextWindow ?? contextWindow),
+			...(m.maxTokens ? { maxTokens: m.maxTokens } : {}),
+		};
+	});
 	upsertProvider(data, providerId, providerCfg);
 	try {
 		applyAdd(pi, data, providerId);

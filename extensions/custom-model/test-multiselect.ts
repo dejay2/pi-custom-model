@@ -104,6 +104,18 @@ test("render shows selection count", () => {
 	assert.ok(first.includes("1/2"), `title shows count, got: ${first}`);
 });
 
+test("preselected indices start checked and can be toggled off", () => {
+	let result: string[] | null | undefined;
+	const ms = new MultiSelect(["a", "b", "c"], 5, theme, (r) => (result = r), undefined, [0, 2]);
+	assert.deepEqual(ms.selectedItems, ["a", "c"]);
+	ms.handleInput("\x1b[B"); // down to b
+	ms.handleInput("\x1b[B"); // down to c
+	ms.handleInput(" "); // toggle c off
+	assert.deepEqual(ms.selectedItems, ["a"]);
+	ms.handleInput("\r");
+	assert.deepEqual(result, ["a"]);
+});
+
 test("injected matcher handles Kitty-protocol CSI-u sequences", () => {
 	// Simulate what pi-tui's matchesKey does for a Kitty terminal:
 	// arrows arrive as CSI-u (e.g. \x1b[1;1A), not legacy \x1b[A.

@@ -32,7 +32,7 @@ pi remove git:github.com/dejay2/pi-custom-model
 
 | Command | Description |
 |---------|-------------|
-| `/add-model` | Interactive wizard: provider id → base URL → API type → API key → **fetches the model list from the endpoint** → scope which models to add (multi-select) → reasoning/context window. Falls back to manual id entry if the endpoint doesn't serve a list |
+| `/add-model` | Pick an **existing endpoint** to re-scope its models (multi-select, pre-checked with your current scope, fetched fresh from the endpoint) or choose "New endpoint" to add one. Falls back to manual id entry if the endpoint doesn't serve a list |
 | `/add-model <provider> <baseUrl> <modelId[,more]> [api] [apiKey]` | Quick one-liner, no prompts. `api` defaults to `openai-completions`, `apiKey` defaults to `keyless` |
 | `/remove-model` | Interactively remove a single model or an entire provider |
 | `/custom-models` | Show everything defined in `~/.pi/agent/models.json` |
@@ -57,6 +57,15 @@ Multi-select keys: `↑↓`/`jk` navigate · `space` toggle · `a` all/none ·
 
 If the endpoint is unreachable or doesn't answer with a model list, the
 wizard falls back to the old comma-separated manual entry.
+
+### Re-scoping an existing endpoint
+
+Run `/add-model` again and pick the endpoint from the list — no re-entering
+URLs or keys. The model picker opens with your currently-added models
+**pre-checked**: tick new models to add them, untick existing ones and
+confirm to remove them. Models that were already configured keep their
+settings (reasoning, context window); the reasoning/context prompts are only
+asked for newly-added models.
 
 ### Unsloth Studio: all quants, not just one
 
