@@ -38,7 +38,11 @@ import {
 import { fetchModels, resolveApiKey, expandUnslothQuants, type DiscoveredModel } from "./discover.ts";
 import { MultiSelect } from "./multiselect.ts";
 import { isKeyRelease, matchesKey, type KeyId } from "@earendil-works/pi-tui";
-import { loginWizard, PROVIDER_ID_RE } from "./login-wizard.ts";
+import { loginWizard, adaptInteraction, PROVIDER_ID_RE } from "./login-wizard.ts";
+// NOTE: named value imports from pi-ai are unreliable through pi's extension
+// loader (jiti interop loses some bindings) — use the namespace object.
+import * as piAi from "@earendil-works/pi-ai";
+import type { ProviderStreams } from "@earendil-works/pi-ai";
 
 const API_TYPES = [
 	"openai-completions — OpenAI Chat Completions (Ollama, vLLM, LM Studio, OpenRouter, most proxies)",
@@ -484,33 +488,66 @@ function listCustomModels(ctx: ExtensionCommandContext): void {
 const LOGIN_VEHICLE_ID = "custom-endpoint";
 
 /**
- * Vehicle provider: makes "Custom endpoint…" appear in pi's native /login
- * menu. Holds no models of its own; the login flow registers the real one.
+ * Vehicle provider: makes "Custom endpoint (add your own)" appear in pi's
+ * native /login menu under BOTH auth categories ("Sign in with an API key"
+ * and "Sign in with an account") — both run the same setup wizard. The
+ * vehicle holds no models of its own; the wizard registers the real provider.
  * The leading space in the name sorts it to the top of the /login list.
  */
 function registerLoginVehicle(pi: ExtensionAPI): void {
-	pi.registerProvider(LOGIN_VEHICLE_ID, {
+	const deps = {
+		apply: (data: ModelsJson, providerId: string) => registerFromFile(pi, providerId, data.providers[providerId]),
+		switchTo: async (providerId: string, modelId: string) => {
+			const model = sessionCtx?.modelRegistry.find(providerId, modelId);
+			if (model) await pi.setModel(model);
+		},
+	};
+	// The vehicle never streams (it has no models), so a stub satisfies the type.
+	const noStreams = {
+		stream() {
+			throw new Error("custom-endpoint vehicle has no models");
+		},
+		streamSimple() {
+			throw new Error("custom-endpoint vehicle has no models");
+		},
+	} as unknown as ProviderStreams;
+
+	const createProvider = (piAi as any).createProvider as (input: any) => any;
+	const vehicle = createProvider({
+		id: LOGIN_VEHICLE_ID,
 		name: " Custom endpoint (add your own)",
-		baseUrl: "http://127.0.0.1:9", // required for oauth registrations; never called
-		oauth: {
-			name: "Custom endpoint",
-			async login(callbacks) {
-				return loginWizard(callbacks, {
-					apply: (data, providerId) => applyAdd(pi, data, providerId),
-					switchTo: async (providerId, modelId) => {
-						const model = sessionCtx?.modelRegistry.find(providerId, modelId);
-						if (model) await pi.setModel(model);
-					},
-				});
+		baseUrl: "http://127.0.0.1:9", // placeholder; the wizard registers the real endpoint
+		models: [],
+		api: noStreams,
+		auth: {
+			apiKey: {
+				name: "Custom endpoint setup",
+				async login(interaction) {
+					const key = await loginWizard(adaptInteraction(interaction), deps);
+					return { type: "api_key" as const, key };
+				},
+				async resolve({ credential }) {
+					return credential?.key
+						? { auth: { apiKey: credential.key }, source: "custom-model login" }
+						: undefined;
+				},
 			},
-			async refreshToken(credentials) {
-				return credentials; // static API key, nothing to refresh
-			},
-			getApiKey(credentials) {
-				return credentials.access;
+			oauth: {
+				name: "Custom endpoint setup",
+				async login(interaction) {
+					const key = await loginWizard(adaptInteraction(interaction), deps);
+					return { type: "oauth" as const, access: key, refresh: key, expires: Number.MAX_SAFE_INTEGER };
+				},
+				async refresh(credential) {
+					return credential; // static API key, nothing to refresh
+				},
+				async toAuth(credential) {
+					return { apiKey: credential.access };
+				},
 			},
 		},
 	});
+	pi.registerProvider(vehicle);
 }
 
 // ---------------------------------------------------------------------------

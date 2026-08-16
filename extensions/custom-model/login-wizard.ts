@@ -1,13 +1,15 @@
 /**
  * The /login integration wizard: runs inside pi's native login flow via the
- * OAuth callback surface (onPrompt / onSelect / onProgress). Collects endpoint
- * details, discovers models, and returns what should be persisted/registered.
+ * provider-auth interaction surface (text/secret/select prompts + progress
+ * notifications). Collects endpoint details, discovers models, persists and
+ * registers the provider, and returns the resolved API key for the caller to
+ * shape into a credential.
  *
- * Free of pi imports — pi-touching side effects are injected so the whole
- * flow is unit-testable with scripted callbacks (see test-login-wizard.ts).
+ * Free of pi value-imports — pi-touching side effects are injected so the
+ * whole flow is unit-testable with scripted answers (test-login-wizard.ts).
  */
 
-import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
+import type { ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import {
 	readModelsJson,
 	writeModelsJson,
@@ -18,6 +20,23 @@ import {
 import { fetchModels, expandUnslothQuants, resolveApiKey } from "./discover.ts";
 
 export const PROVIDER_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
+/** Minimal prompt surface the wizard needs — implemented by pi's login UI. */
+export interface WizardInteraction {
+	text(message: string, placeholder?: string, secret?: boolean): Promise<string>;
+	select(message: string, options: { id: string; label: string }[]): Promise<string | undefined>;
+	progress(message: string): void;
+}
+
+/** Adapt pi's ProviderAuthInteraction (used by both api-key and OAuth logins). */
+export function adaptInteraction(i: ProviderAuthInteraction): WizardInteraction {
+	return {
+		text: (message, placeholder, secret) =>
+			i.prompt({ type: secret ? "secret" : "text", message, placeholder }),
+		select: (message, options) => i.prompt({ type: "select", message, options }),
+		progress: (message) => i.notify({ type: "progress", message }),
+	};
+}
 
 export interface LoginWizardDeps {
 	/** Make the provider live immediately (registerProvider). */
@@ -44,51 +63,44 @@ function parseModelIds(raw: string): string[] {
 	return [...new Set(raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean))];
 }
 
-export async function loginWizard(cb: OAuthLoginCallbacks, deps: LoginWizardDeps): Promise<OAuthCredentials> {
+/** Run the wizard. Resolves with the API key to store as the credential. */
+export async function loginWizard(ui: WizardInteraction, deps: LoginWizardDeps): Promise<string> {
 	const providerId = (
-		await cb.onPrompt({ message: "Provider ID — short slug for this endpoint", placeholder: "ollama, lmstudio, my-proxy" })
+		await ui.text("Provider ID — short slug for this endpoint", "ollama, lmstudio, my-proxy")
 	).trim();
 	if (!providerId || !PROVIDER_ID_RE.test(providerId)) {
 		throw new Error(`Invalid provider id "${providerId}". Use letters, digits, '-', '_', '.'.`);
 	}
 
-	const baseUrl = (
-		await cb.onPrompt({ message: `Base URL for "${providerId}"`, placeholder: "http://localhost:11434/v1" })
-	).trim();
+	const baseUrl = (await ui.text(`Base URL for "${providerId}"`, "http://localhost:11434/v1")).trim();
 	if (!baseUrl) throw new Error("Base URL is required");
 
-	const api = await cb.onSelect({
-		message: "Which API does this endpoint speak?",
-		options: [
-			{ id: "openai-completions", label: "OpenAI Chat Completions (Ollama, vLLM, LM Studio, most proxies)" },
-			{ id: "openai-responses", label: "OpenAI Responses API" },
-			{ id: "anthropic-messages", label: "Anthropic Messages API (Anthropic-compatible proxies)" },
-			{ id: "google-generative-ai", label: "Google Generative AI" },
-		],
-	});
+	const api = await ui.select("Which API does this endpoint speak?", [
+		{ id: "openai-completions", label: "OpenAI Chat Completions (Ollama, vLLM, LM Studio, most proxies)" },
+		{ id: "openai-responses", label: "OpenAI Responses API" },
+		{ id: "anthropic-messages", label: "Anthropic Messages API (Anthropic-compatible proxies)" },
+		{ id: "google-generative-ai", label: "Google Generative AI" },
+	]);
 	if (!api) throw new Error("Login cancelled");
 
-	const authChoice = await cb.onSelect({
-		message: "How should pi authenticate?",
-		options: [
-			{ id: "key", label: "Paste an API key (stored in models.json)" },
-			{ id: "env", label: "Use an environment variable ($VAR reference)" },
-			{ id: "keyless", label: "No key needed (local/keyless server)" },
-		],
-	});
+	const authChoice = await ui.select("How should pi authenticate?", [
+		{ id: "key", label: "Paste an API key (stored in models.json)" },
+		{ id: "env", label: "Use an environment variable ($VAR reference)" },
+		{ id: "keyless", label: "No key needed (local/keyless server)" },
+	]);
 	if (!authChoice) throw new Error("Login cancelled");
 
 	let apiKey = "keyless";
 	if (authChoice === "key") {
-		apiKey = (await cb.onPrompt({ message: "API key", placeholder: "sk-..." })).trim();
+		apiKey = (await ui.text("API key", "sk-...", true)).trim();
 		if (!apiKey) throw new Error("API key is required");
 	} else if (authChoice === "env") {
-		const varName = (await cb.onPrompt({ message: "Environment variable name", placeholder: "MY_API_KEY" })).trim();
+		const varName = (await ui.text("Environment variable name", "MY_API_KEY")).trim();
 		if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(varName)) throw new Error(`"${varName}" is not a valid variable name`);
 		apiKey = `$${varName}`;
 	}
 
-	cb.onProgress?.("Fetching model list from endpoint…");
+	ui.progress("Fetching model list from endpoint…");
 	const discoveryCfg = { baseUrl, api, apiKey: resolveApiKey(apiKey) };
 	let discovered = await fetchModels(discoveryCfg);
 	if (discovered) discovered = await expandUnslothQuants(discoveryCfg, discovered);
@@ -97,10 +109,10 @@ export async function loginWizard(cb: OAuthLoginCallbacks, deps: LoginWizardDeps
 	if (discovered) {
 		entries = discovered.map((m) => buildModel(m.id, m.contextWindow, m.maxTokens));
 	} else {
-		const raw = await cb.onPrompt({
-			message: "No model list available — enter model ID(s), comma-separated",
-			placeholder: "llama3.1:8b, qwen2.5-coder:7b",
-		});
+		const raw = await ui.text(
+			"No model list available — enter model ID(s), comma-separated",
+			"llama3.1:8b, qwen2.5-coder:7b",
+		);
 		const ids = parseModelIds(raw ?? "");
 		if (ids.length === 0) throw new Error("No models given");
 		entries = ids.map((id) => buildModel(id));
@@ -111,7 +123,7 @@ export async function loginWizard(cb: OAuthLoginCallbacks, deps: LoginWizardDeps
 	writeModelsJson(data, deps.modelsJsonPath);
 	deps.apply(data, providerId);
 
-	cb.onProgress?.(`Added ${entries.length} model(s) to "${providerId}". Re-scope any time with /add-model.`);
+	ui.progress(`Added ${entries.length} model(s) to "${providerId}". Re-scope any time with /add-model.`);
 
 	if (deps.switchTo) {
 		try {
@@ -121,6 +133,5 @@ export async function loginWizard(cb: OAuthLoginCallbacks, deps: LoginWizardDeps
 		}
 	}
 
-	const resolved = resolveApiKey(apiKey) ?? "keyless";
-	return { access: resolved, refresh: resolved, expires: Number.MAX_SAFE_INTEGER };
+	return resolveApiKey(apiKey) ?? "keyless";
 }
