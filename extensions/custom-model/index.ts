@@ -34,6 +34,7 @@ import {
 } from "./store.ts";
 import { fetchModels, resolveApiKey, type DiscoveredModel } from "./discover.ts";
 import { MultiSelect } from "./multiselect.ts";
+import { isKeyRelease, matchesKey, type KeyId } from "@earendil-works/pi-tui";
 
 const API_TYPES = [
 	"openai-completions — OpenAI Chat Completions (Ollama, vLLM, LM Studio, OpenRouter, most proxies)",
@@ -227,11 +228,13 @@ async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 						warning: (s: string) => theme.fg("warning", s),
 					},
 					done,
+					(data, keyId) => matchesKey(data, keyId as KeyId),
 				);
 				return {
 					render: (w: number) => ms.render(w),
 					invalidate: () => ms.invalidate(),
 					handleInput: (data: string) => {
+						if (isKeyRelease(data)) return; // Kitty protocol sends release events
 						ms.handleInput(data);
 						tui.requestRender();
 					},

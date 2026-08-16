@@ -104,4 +104,27 @@ test("render shows selection count", () => {
 	assert.ok(first.includes("1/2"), `title shows count, got: ${first}`);
 });
 
+test("injected matcher handles Kitty-protocol CSI-u sequences", () => {
+	// Simulate what pi-tui's matchesKey does for a Kitty terminal:
+	// arrows arrive as CSI-u (e.g. \x1b[1;1A), not legacy \x1b[A.
+	const kittyMatch = (data: string, keyId: string) => {
+		const kitty: Record<string, string[]> = {
+			up: ["\x1b[A", "\x1b[1;1A"],
+			down: ["\x1b[B", "\x1b[1;1B"],
+			escape: ["\x1b", "\x1b[27u"],
+			enter: ["\r", "\x1b[13u"],
+			space: [" ", "\x1b[32u"],
+		};
+		return (kitty[keyId] ?? [keyId]).includes(data);
+	};
+	let result: string[] | null | undefined;
+	const ms = new MultiSelect(["a", "b", "c"], 5, theme, (r) => (result = r), kittyMatch);
+	ms.handleInput("\x1b[1;1B"); // kitty down
+	ms.handleInput("\x1b[1;1B"); // kitty down
+	ms.handleInput("\x1b[32u"); // kitty space
+	assert.deepEqual(ms.selectedItems, ["c"]);
+	ms.handleInput("\x1b[13u"); // kitty enter
+	assert.deepEqual(result, ["c"]);
+});
+
 console.log(`\n${passed} tests passed${process.exitCode ? " (with failures)" : ""}`);

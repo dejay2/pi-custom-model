@@ -15,6 +15,14 @@ export interface MultiSelectTheme {
 	warning(s: string): string;
 }
 
+/**
+ * Key matcher, e.g. `matchesKey` from @earendil-works/pi-tui. Injected so the
+ * component stays dependency-free and unit-testable — raw terminal input
+ * differs between legacy escape sequences and the Kitty keyboard protocol,
+ * and the injected matcher normalizes both.
+ */
+export type KeyMatcher = (data: string, keyId: string) => boolean;
+
 export class MultiSelect {
 	private cursor = 0;
 	private readonly selected = new Set<number>();
@@ -23,17 +31,32 @@ export class MultiSelect {
 	private readonly maxVisible: number;
 	private readonly theme: MultiSelectTheme;
 	private readonly done: (result: string[] | null) => void;
+	private readonly match: KeyMatcher;
 
 	constructor(
 		items: string[],
 		maxVisible: number,
 		theme: MultiSelectTheme,
 		done: (result: string[] | null) => void,
+		match?: KeyMatcher,
 	) {
 		this.items = items;
 		this.maxVisible = maxVisible;
 		this.theme = theme;
 		this.done = done;
+		// Fallback for tests: legacy escape sequences + raw printable chars.
+		this.match =
+			match ??
+			((data, keyId) => {
+				const legacy: Record<string, string> = {
+					up: "\x1b[A",
+					down: "\x1b[B",
+					escape: "\x1b",
+					enter: "\r",
+					space: " ",
+				};
+				return data === (legacy[keyId] ?? keyId);
+			});
 	}
 
 	/** Current selection as item values (for tests). */
@@ -42,30 +65,31 @@ export class MultiSelect {
 	}
 
 	handleInput(data: string): void {
-		switch (data) {
-			case "\x1b": // esc
-				this.done(null);
-				return;
-			case "\x1b[A": // up
-			case "k":
-				this.move(-1);
-				return;
-			case "\x1b[B": // down
-			case "j":
-				this.move(1);
-				return;
-			case " ": // toggle current
-				this.toggle(this.cursor);
-				return;
-			case "a": // all / none
-				if (this.selected.size === this.items.length) this.selected.clear();
-				else this.items.forEach((_, i) => this.selected.add(i));
-				return;
-			case "\r": // confirm
-			case "\n":
-				if (this.selected.size === 0) this.selected.add(this.cursor);
-				this.done(this.selectedItems);
-				return;
+		if (this.match(data, "escape")) {
+			this.done(null);
+			return;
+		}
+		if (this.match(data, "up") || this.match(data, "k")) {
+			this.move(-1);
+			return;
+		}
+		if (this.match(data, "down") || this.match(data, "j")) {
+			this.move(1);
+			return;
+		}
+		if (this.match(data, "space")) {
+			this.toggle(this.cursor);
+			return;
+		}
+		if (this.match(data, "a")) {
+			if (this.selected.size === this.items.length) this.selected.clear();
+			else this.items.forEach((_, i) => this.selected.add(i));
+			return;
+		}
+		if (this.match(data, "enter")) {
+			if (this.selected.size === 0) this.selected.add(this.cursor);
+			this.done(this.selectedItems);
+			return;
 		}
 	}
 

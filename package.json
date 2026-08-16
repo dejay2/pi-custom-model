@@ -1,15 +1,19 @@
 {
   "name": "pi-custom-model",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "description": "pi extension: easily add custom models with custom endpoints and API keys (/add-model wizard)",
   "license": "MIT",
   "keywords": ["pi-package"],
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
       "optional": true
     }
   },
