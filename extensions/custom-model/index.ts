@@ -39,6 +39,13 @@ import { fetchModels, resolveApiKey, expandUnslothQuants, type DiscoveredModel }
 import { MultiSelect } from "./multiselect.ts";
 import { isKeyRelease, matchesKey, type KeyId } from "@earendil-works/pi-tui";
 import { loginWizard, adaptInteraction, PROVIDER_ID_RE } from "./login-wizard.ts";
+import {
+	fetchUnslothReasoning,
+	thinkingConfigFor,
+	guessThinkingConfig,
+	matchesActiveModel,
+	type ReasoningInfo,
+} from "./thinking.ts";
 // NOTE: named value imports from pi-ai are unreliable through pi's extension
 // loader (jiti interop loses some bindings) — use the namespace object.
 import * as piAi from "@earendil-works/pi-ai";
