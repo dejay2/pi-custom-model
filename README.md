@@ -58,6 +58,24 @@ Multi-select keys: `↑↓`/`jk` navigate · `space` toggle · `a` all/none ·
 If the endpoint is unreachable or doesn't answer with a model list, the
 wizard falls back to the old comma-separated manual entry.
 
+### Unsloth Studio: all quants, not just one
+
+Unsloth's `GET /v1/models` advertises **one entry per model repo** with a
+single `quant` hint — even when you have several quants of the same model
+downloaded (its clients pin a quant by requesting `<id>:<quant>`). The wizard
+detects this and probes Unsloth's Studio API (`/api/models/gguf-variants`)
+to expand the catalog into **one selectable entry per downloaded quant**:
+
+```
+❯ [ ] unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL (15.0 GB) (loaded)
+  [ ] unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q8_0 (27.0 GB)
+```
+
+Only downloaded quants are listed. Picking `…:UD-Q8_0` makes Unsloth switch
+to that quant on the next request (expect a load delay when switching).
+Non-Unsloth servers are unaffected — the probe fails quietly and the plain
+catalog is shown.
+
 ### Example session
 
 ```

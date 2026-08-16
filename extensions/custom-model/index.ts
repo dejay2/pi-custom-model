@@ -32,7 +32,7 @@ import {
 	type ModelsJson,
 	type ProviderEntry,
 } from "./store.ts";
-import { fetchModels, resolveApiKey, type DiscoveredModel } from "./discover.ts";
+import { fetchModels, resolveApiKey, expandUnslothQuants, type DiscoveredModel } from "./discover.ts";
 import { MultiSelect } from "./multiselect.ts";
 import { isKeyRelease, matchesKey, type KeyId } from "@earendil-works/pi-tui";
 
@@ -215,11 +215,16 @@ async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 		});
 		if (models) {
 			discovered = true;
-			const ids = models.map((m) => m.id);
+			// Unsloth Studio advertises one entry per repo; expand to per-quant entries.
+			const expanded = await expandUnslothQuants(
+				{ baseUrl: effective.baseUrl!, api: effective.api!, apiKey: resolveApiKey(effective.apiKey) },
+				models,
+			);
+			const labels = expanded.map((m) => m.displayName ?? m.id);
 			const chosen = await ctx.ui.custom<string[] | null>((tui, theme, _kb, done) => {
 				const ms = new MultiSelect(
-					ids,
-					Math.min(ids.length, 12),
+					labels,
+					Math.min(labels.length, 12),
 					{
 						accent: (s: string) => theme.fg("accent", s),
 						muted: (s: string) => theme.fg("muted", s),
@@ -241,7 +246,7 @@ async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 				};
 			});
 			if (!chosen || chosen.length === 0) return;
-			picked = models.filter((m) => chosen.includes(m.id));
+			picked = expanded.filter((m) => chosen.includes(m.displayName ?? m.id));
 		} else {
 			ctx.ui.notify("Could not fetch a model list from the endpoint — enter model IDs manually.", "warning");
 			picked = [];

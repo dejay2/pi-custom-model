@@ -11,6 +11,11 @@ export interface DiscoveredModel {
 	/** Present when the server advertises it (some OpenAI-compatible servers do). */
 	contextWindow?: number;
 	maxTokens?: number;
+	/** Unsloth Studio advertises a single preferred on-disk quant per repo. */
+	quant?: string;
+	/** Unsloth Studio marks the currently-resident model(s). */
+	loaded?: boolean;
+	displayName?: string;
 }
 
 export interface DiscoveryConfig {
@@ -89,6 +94,10 @@ export function parseModelsResponse(api: string, body: unknown): DiscoveredModel
 			const mt = rec.max_tokens ?? rec.max_output_tokens;
 			if (typeof cw === "number" && cw > 0) entry.contextWindow = cw;
 			if (typeof mt === "number" && mt > 0) entry.maxTokens = mt;
+			// Unsloth Studio extras
+			if (typeof rec.quant === "string" && rec.quant) entry.quant = rec.quant;
+			if (typeof rec.loaded === "boolean") entry.loaded = rec.loaded;
+			if (typeof rec.display_name === "string" && rec.display_name) entry.displayName = rec.display_name;
 			return entry;
 		})
 		.filter((m) => m.id.length > 0);
@@ -114,4 +123,95 @@ export async function fetchModels(cfg: DiscoveryConfig, timeoutMs = 10_000): Pro
 		}
 	}
 	return null;
+}
+
+// ---------------------------------------------------------------------------
+// Unsloth Studio quant expansion
+//
+// Unsloth's OpenAI-compatible GET /v1/models advertises ONE entry per model
+// repo (keyed by clean id) with a single `quant` hint — even when several
+// quants of that repo are downloaded. Its clients pin a quant by requesting
+// "<id>:<quant>". The Studio API exposes every downloaded quant at
+// GET /api/models/gguf-variants?repo_id=<org/repo>, so we can expand the
+// catalog into one selectable entry per downloaded quant.
+// ---------------------------------------------------------------------------
+
+export interface GgufVariant {
+	quant: string;
+	sizeBytes?: number;
+}
+
+const HF_REPO_RE = /^[A-Za-z0-9][\w.-]*\/[\w.-]+$/;
+
+/** Strip a trailing /v1 (or /v1beta) to reach the server root. */
+export function serverRoot(baseUrl: string): string {
+	return baseUrl.replace(/\/+$/, "").replace(/\/v1(beta)?$/i, "");
+}
+
+/**
+ * Fetch downloaded GGUF variants for a repo from an Unsloth Studio server.
+ * Returns null when the server is not Unsloth / the route is unavailable.
+ */
+export async function fetchGgufVariants(
+	cfg: DiscoveryConfig,
+	repoId: string,
+	timeoutMs = 10_000,
+): Promise<GgufVariant[] | null> {
+	const url = `${serverRoot(cfg.baseUrl)}/api/models/gguf-variants?repo_id=${encodeURIComponent(repoId)}`;
+	try {
+		const res = await fetch(url, { headers: headersFor(cfg), signal: AbortSignal.timeout(timeoutMs) });
+		if (!res.ok) return null;
+		const body = (await res.json()) as Record<string, unknown>;
+		if (!Array.isArray(body.variants)) return null;
+		return body.variants
+			.map((v) => {
+				const rec = v as Record<string, unknown>;
+				return {
+					quant: String(rec.quant ?? ""),
+					sizeBytes: typeof rec.size_bytes === "number" ? rec.size_bytes : undefined,
+					downloaded: Boolean(rec.downloaded),
+				};
+			})
+			.filter((v) => v.downloaded && v.quant)
+			.map(({ quant, sizeBytes }) => ({ quant, sizeBytes }));
+	} catch {
+		return null;
+	}
+}
+
+function formatGb(bytes?: number): string | undefined {
+	if (!bytes || bytes <= 0) return undefined;
+	return `${(bytes / 1e9).toFixed(1)} GB`;
+}
+
+/**
+ * Expand an Unsloth catalog into per-quant entries. Only runs when the
+ * catalog carries Unsloth's `quant` signature; each HF-repo-shaped id is
+ * probed for its downloaded variants and replaced by `<id>:<quant>` entries.
+ * Servers that don't answer the probe keep their original entries.
+ */
+export async function expandUnslothQuants(cfg: DiscoveryConfig, models: DiscoveredModel[]): Promise<DiscoveredModel[]> {
+	if (!models.some((m) => m.quant !== undefined)) return models;
+	const out: DiscoveredModel[] = [];
+	for (const m of models) {
+		if (!HF_REPO_RE.test(m.id)) {
+			out.push(m);
+			continue;
+		}
+		const variants = await fetchGgufVariants(cfg, m.id);
+		if (!variants || variants.length === 0) {
+			out.push(m);
+			continue;
+		}
+		for (const v of variants) {
+			const size = formatGb(v.sizeBytes);
+			out.push({
+				...m,
+				id: `${m.id}:${v.quant}`,
+				quant: v.quant,
+				displayName: `${m.displayName ?? m.id}:${v.quant}${size ? ` (${size})` : ""}${m.loaded ? " (loaded)" : ""}`,
+			});
+		}
+	}
+	return out;
 }
