@@ -18,6 +18,13 @@ import {
 	type ModelsJson,
 } from "./store.ts";
 import { fetchModels, expandUnslothQuants, resolveApiKey } from "./discover.ts";
+import {
+	fetchUnslothReasoning,
+	thinkingConfigFor,
+	guessThinkingConfig,
+	matchesActiveModel,
+	type ThinkingConfig,
+} from "./thinking.ts";
 
 export const PROVIDER_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
@@ -47,14 +54,16 @@ export interface LoginWizardDeps {
 	modelsJsonPath?: string;
 }
 
-function buildModel(id: string, contextWindow?: number, maxTokens?: number): ModelEntry {
+function buildModel(id: string, contextWindow?: number, maxTokens?: number, thinking?: ThinkingConfig): ModelEntry {
 	return {
 		id,
 		name: id,
-		reasoning: false,
+		reasoning: thinking?.reasoning ?? false,
 		input: ["text"],
 		...(contextWindow ? { contextWindow } : {}),
 		...(maxTokens ? { maxTokens } : {}),
+		...(thinking?.compat ? { compat: thinking.compat } : {}),
+		...(thinking?.thinkingLevelMap ? { thinkingLevelMap: thinking.thinkingLevelMap } : {}),
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	};
 }
@@ -107,7 +116,19 @@ export async function loginWizard(ui: WizardInteraction, deps: LoginWizardDeps):
 
 	let entries: ModelEntry[];
 	if (discovered) {
-		entries = discovered.map((m) => buildModel(m.id, m.contextWindow, m.maxTokens));
+		// Auto-configure thinking control: Unsloth's classification for the
+		// loaded model, name-family heuristics for the rest.
+		const detected = await fetchUnslothReasoning(discoveryCfg);
+		entries = discovered.map((m) => {
+			const thinking =
+				detected && matchesActiveModel(m.id, detected.activeModel)
+					? thinkingConfigFor(detected)
+					: guessThinkingConfig(m.id);
+			return buildModel(m.id, m.contextWindow, m.maxTokens, thinking);
+		});
+		if (detected && detected.style !== "none") {
+			ui.progress(`Thinking control auto-configured for the loaded model (${detected.style}).`);
+		}
 	} else {
 		const raw = await ui.text(
 			"No model list available — enter model ID(s), comma-separated",

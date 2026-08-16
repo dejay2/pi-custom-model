@@ -299,17 +299,34 @@ async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 		picked = ids.map((id) => ({ id }));
 	}
 
-	// 6. Reasoning + context window — only asked for newly-added models;
+	// 6. Thinking/reasoning + context window — only for newly-added models;
 	//    models already on the provider keep their configured settings.
 	const existingById = new Map((existing?.models ?? []).map((m) => [m.id, m]));
 	const hasNew = picked.some((m) => !existingById.has(m.id));
-	let reasoning = false;
+	let reasoningDefault = false;
 	let contextWindow: number | undefined;
+	let detected: ReasoningInfo | null = null;
 	if (hasNew) {
-		reasoning = await ctx.ui.confirm(
-			"Reasoning / thinking support?",
-			`Do ${picked.length > 1 ? "these models" : "this model"} support extended thinking?`,
-		);
+		// Auto-detect thinking control from the loaded model (Unsloth /api/inference/status).
+		if (effective.baseUrl && effective.api) {
+			detected = await fetchUnslothReasoning({
+				baseUrl: effective.baseUrl,
+				api: effective.api,
+				apiKey: resolveApiKey(effective.apiKey),
+			});
+		}
+		const autoConfigured = (m: DiscoveredModel) =>
+			(detected !== null && matchesActiveModel(m.id, detected.activeModel)) || guessThinkingConfig(m.id) !== undefined;
+		const newModels = picked.filter((m) => !existingById.has(m.id));
+		if (newModels.some((m) => !autoConfigured(m))) {
+			reasoningDefault = await ctx.ui.confirm(
+				"Reasoning / thinking support?",
+				`Do ${newModels.length > 1 ? "these models" : "this model"} support extended thinking?`,
+			);
+		}
+		if (detected && newModels.some((m) => matchesActiveModel(m.id, detected!.activeModel))) {
+			ctx.ui.notify(`Thinking control auto-configured from the loaded model (${detected.style}).`, "info");
+		}
 		// Only prompt when at least one picked model carries no discovered context window.
 		if (picked.some((m) => !m.contextWindow)) {
 			const ctxRaw = (
@@ -326,6 +343,13 @@ async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 		}
 	}
 
+	const thinkingFor = (m: DiscoveredModel) => {
+		if (detected && matchesActiveModel(m.id, detected.activeModel)) return thinkingConfigFor(detected);
+		const guess = guessThinkingConfig(m.id);
+		if (guess) return guess;
+		return { reasoning: reasoningDefault };
+	};
+
 	providerCfg.models = picked.map((m) => {
 		if (existingById.has(m.id)) {
 			// Already configured: keep its settings, refresh discovered limits only.
@@ -335,9 +359,12 @@ async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 				...(m.maxTokens ? { maxTokens: m.maxTokens } : {}),
 			};
 		}
+		const t = thinkingFor(m);
 		return {
-			...buildModel(m.id, reasoning, m.contextWindow ?? contextWindow),
+			...buildModel(m.id, t.reasoning, m.contextWindow ?? contextWindow),
 			...(m.maxTokens ? { maxTokens: m.maxTokens } : {}),
+			...(t.compat ? { compat: t.compat } : {}),
+			...(t.thinkingLevelMap ? { thinkingLevelMap: t.thinkingLevelMap } : {}),
 		};
 	});
 	upsertProvider(data, providerId, providerCfg);

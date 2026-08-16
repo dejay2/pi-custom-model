@@ -69,6 +69,29 @@ Multi-select keys: `↑↓`/`jk` navigate · `space` toggle · `a` all/none ·
 If the endpoint is unreachable or doesn't answer with a model list, the
 wizard falls back to the old comma-separated manual entry.
 
+### Thinking / reasoning control
+
+Getting thinking on/off (and effort levels) to actually work over the wire is
+endpoint-specific: pi sends `reasoning_effort` by default, which llama.cpp-
+based servers (including Unsloth) silently ignore for `enable_thinking`
+templates — that's why thinking felt "always on".
+
+The wizard now auto-configures this. It probes Unsloth's
+`/api/inference/status`, which exposes Unsloth's own chat-template
+classification of the loaded model, and writes matching per-model config:
+
+| Detected style | Models | What pi sends |
+|---|---|---|
+| `enable_thinking` | Qwen3.x | `chat_template_kwargs.enable_thinking` true/false + `preserve_thinking` |
+| `enable_thinking_effort` | GLM-5.2, DeepSeek-V4, Kimi | both kwargs above + `reasoning_effort` level; only the template's real levels (e.g. high/max) are offered |
+| `reasoning_effort` | gpt-oss | `reasoning_effort` level; pi's "off" maps to the `"none"` sentinel |
+| always-on | hardcoded `<think>` templates | pi hides "off" (`thinkingLevelMap: { off: null }`) |
+
+Detection only covers the **currently loaded** model; other picked models get
+name-family heuristics (qwen3\*, gpt-oss, glm-5\*) or fall back to the
+manual reasoning question. Tune further via `thinkingLevelMap` and `compat`
+in `~/.pi/agent/models.json` (see pi's models.md).
+
 ### Re-scoping an existing endpoint
 
 Run `/add-model` again and pick the endpoint from the list — no re-entering
@@ -144,7 +167,8 @@ extensions/custom-model/
 ├── store.ts             # models.json read/merge/remove helpers (no pi imports)
 ├── discover.ts          # endpoint /models fetching + Unsloth quant expansion
 ├── multiselect.ts       # checkbox-list TUI component (theme-injected)
-└── test-*.ts            # unit tests (51 total)
+├── thinking.ts          # Unsloth reasoning detection → pi thinking config mapping
+└── test-*.ts            # unit tests (64 total)
 ```
 
 Run the tests (Node ≥ 23, types are stripped natively):
