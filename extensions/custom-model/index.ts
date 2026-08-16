@@ -1,6 +1,10 @@
 /**
  * custom-model — easily add/remove custom models with custom endpoints.
  *
+ * Integrates with pi's native /login: a "Custom endpoint (add your own)"
+ * entry sorts to the top of the provider list and runs the setup wizard
+ * (endpoint → API type → auth → model discovery) inside the login flow.
+ *
  * Commands:
  *   /add-model            Pick an existing endpoint to re-scope its models
  *                         (pre-checked multi-select, fetched fresh from the
@@ -19,7 +23,7 @@
  * refreshes and can hang in non-interactive sessions.)
  */
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	MODELS_JSON_PATH,
 	readModelsJson,
@@ -34,6 +38,7 @@ import {
 import { fetchModels, resolveApiKey, expandUnslothQuants, type DiscoveredModel } from "./discover.ts";
 import { MultiSelect } from "./multiselect.ts";
 import { isKeyRelease, matchesKey, type KeyId } from "@earendil-works/pi-tui";
+import { loginWizard, PROVIDER_ID_RE } from "./login-wizard.ts";
 
 const API_TYPES = [
 	"openai-completions — OpenAI Chat Completions (Ollama, vLLM, LM Studio, OpenRouter, most proxies)",
@@ -43,7 +48,8 @@ const API_TYPES = [
 ];
 const apiTypeId = (choice: string) => choice.split(" ")[0];
 
-const PROVIDER_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+/** Latest session context, captured for the /login integration (best-effort model switch). */
+let sessionCtx: ExtensionContext | undefined;
 
 function parseModelIds(raw: string): string[] {
 	return [...new Set(raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean))];
@@ -471,7 +477,47 @@ function listCustomModels(ctx: ExtensionCommandContext): void {
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// /login integration — "Custom endpoint…" entry in pi's native login menu
+// ---------------------------------------------------------------------------
+
+const LOGIN_VEHICLE_ID = "custom-endpoint";
+
+/**
+ * Vehicle provider: makes "Custom endpoint…" appear in pi's native /login
+ * menu. Holds no models of its own; the login flow registers the real one.
+ * The leading space in the name sorts it to the top of the /login list.
+ */
+function registerLoginVehicle(pi: ExtensionAPI): void {
+	pi.registerProvider(LOGIN_VEHICLE_ID, {
+		name: " Custom endpoint (add your own)",
+		baseUrl: "http://127.0.0.1:9", // required for oauth registrations; never called
+		oauth: {
+			name: "Custom endpoint",
+			async login(callbacks) {
+				return loginWizard(callbacks, {
+					apply: (data, providerId) => applyAdd(pi, data, providerId),
+					switchTo: async (providerId, modelId) => {
+						const model = sessionCtx?.modelRegistry.find(providerId, modelId);
+						if (model) await pi.setModel(model);
+					},
+				});
+			},
+			async refreshToken(credentials) {
+				return credentials; // static API key, nothing to refresh
+			},
+			getApiKey(credentials) {
+				return credentials.access;
+			},
+		},
+	});
+}
+
+// ---------------------------------------------------------------------------
+
 export default function (pi: ExtensionAPI) {
+	registerLoginVehicle(pi);
+
 	pi.registerCommand("add-model", {
 		description: "Add a custom model/provider (interactive wizard, or: /add-model <provider> <baseUrl> <modelId[,more]> [api] [apiKey])",
 		handler: async (args, ctx) => {
@@ -507,6 +553,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		sessionCtx = ctx;
 		if (ctx.hasUI) ctx.ui.setWidget("custom-models", undefined);
 	});
 }

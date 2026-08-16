@@ -30,6 +30,17 @@ pi remove git:github.com/dejay2/pi-custom-model
 
 ## Usage
 
+### Via pi's native `/login` (recommended)
+
+The extension adds **"Custom endpoint (add your own)"** to the top of pi's
+built-in `/login` provider list. Picking it runs the setup wizard right
+inside the login flow: provider id → base URL → API type → auth (paste key /
+`$ENV_VAR` / keyless) → automatic model discovery (Unsloth-aware, all quants).
+The provider is registered live, persisted to `models.json`, and pi switches
+to the first discovered model.
+
+### Via commands
+
 | Command | Description |
 |---------|-------------|
 | `/add-model` | Pick an **existing endpoint** to re-scope its models (multi-select, pre-checked with your current scope, fetched fresh from the endpoint) or choose "New endpoint" to add one. Falls back to manual id entry if the endpoint doesn't serve a list |
@@ -128,13 +139,12 @@ re-reads it every time `/model` opens.
 
 ```
 extensions/custom-model/
-├── index.ts             # extension entry point (commands, wizard UI)
+├── index.ts             # extension entry point (commands, wizard UI, /login vehicle)
+├── login-wizard.ts      # /login flow (OAuth callback surface; no pi imports)
 ├── store.ts             # models.json read/merge/remove helpers (no pi imports)
-├── discover.ts          # endpoint /models fetching + parsing (no pi imports)
+├── discover.ts          # endpoint /models fetching + Unsloth quant expansion
 ├── multiselect.ts       # checkbox-list TUI component (theme-injected)
-├── test-store.ts        # unit tests
-├── test-discover.ts     # unit tests (incl. live mock-server fetches)
-└── test-multiselect.ts  # unit tests (interaction logic)
+└── test-*.ts            # unit tests (51 total)
 ```
 
 Run the tests (Node ≥ 23, types are stripped natively):
