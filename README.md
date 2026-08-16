@@ -61,7 +61,8 @@ or the quick form:
 - Entries are persisted to pi's native `~/.pi/agent/models.json`, so they
   survive restarts and work with every pi feature (`/model`, `--model`,
   `--list-models`).
-- After each change the extension calls `modelRegistry.refresh()`, so models
+- After each change the extension re-registers the provider with pi (and pi
+  re-reads `models.json` whenever `/model` opens), so models
   are usable **immediately** — no `/reload`, no restart.
 - The wizard offers to switch the active model right after adding.
 - API key options: paste a literal key, reference an environment variable

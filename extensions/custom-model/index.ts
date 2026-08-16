@@ -11,7 +11,9 @@
  *   /custom-models        List everything defined in ~/.pi/agent/models.json.
  *
  * Changes are persisted to ~/.pi/agent/models.json and applied immediately
- * via modelRegistry.refresh() — no restart or /reload required.
+ * via pi.registerProvider()/unregisterProvider() — no restart or /reload required.
+ * (modelRegistry.refresh() is avoided: it does unbounded network catalog
+ * refreshes and can hang in non-interactive sessions.)
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -52,12 +54,51 @@ function buildModel(id: string, reasoning: boolean, contextWindow?: number): Mod
 	};
 }
 
-/** Persist + hot-reload the registry so changes take effect immediately. */
-async function apply(data: ModelsJson, ctx: ExtensionCommandContext): Promise<void> {
+/** Defaults pi applies when loading models.json — mirrored for registerProvider. */
+const MODEL_DEFAULTS = {
+	reasoning: false,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 128000,
+	maxTokens: 16384,
+};
+
+/** Normalize a models.json entry into the full shape registerProvider expects. */
+function toRegisteredModel(m: ModelEntry) {
+	return {
+		...MODEL_DEFAULTS,
+		...m,
+		name: m.name ?? m.id,
+		input: m.input ?? MODEL_DEFAULTS.input,
+		cost: m.cost ?? MODEL_DEFAULTS.cost,
+	};
+}
+
+/** Make a provider from models.json live immediately (no /reload, no network refresh). */
+function registerFromFile(pi: ExtensionAPI, providerId: string, provider: ProviderEntry): void {
+	pi.registerProvider(providerId, {
+		...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
+		...(provider.api ? { api: provider.api } : {}),
+		...(provider.apiKey ? { apiKey: provider.apiKey } : {}),
+		...(provider.headers ? { headers: provider.headers } : {}),
+		...(provider.authHeader !== undefined ? { authHeader: provider.authHeader } : {}),
+		...(provider.compat ? { compat: provider.compat } : {}),
+		models: (Array.isArray(provider.models) ? provider.models : []).map(toRegisteredModel),
+	});
+}
+
+/** Persist models.json (restart-safe) and register the provider (live now). */
+function applyAdd(pi: ExtensionAPI, data: ModelsJson, providerId: string): void {
 	writeModelsJson(data);
-	await ctx.modelRegistry.refresh();
-	const err = ctx.modelRegistry.getError();
-	if (err) throw new Error(`models.json saved but pi reports a config error: ${err}`);
+	registerFromFile(pi, providerId, data.providers[providerId]);
+}
+
+/** Persist a removal and update the live registry to match. */
+function applyRemove(pi: ExtensionAPI, data: ModelsJson, providerId: string): void {
+	writeModelsJson(data);
+	const provider = data.providers[providerId];
+	if (provider) registerFromFile(pi, providerId, provider);
+	else pi.unregisterProvider(providerId);
 }
 
 /** Offer to switch the active model to providerId/modelId. */
@@ -179,9 +220,8 @@ async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 
 	providerCfg.models = ids.map((id) => buildModel(id, reasoning, contextWindow));
 	upsertProvider(data, providerId, providerCfg);
-
 	try {
-		await apply(data, ctx);
+		applyAdd(pi, data, providerId);
 	} catch (err) {
 		ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
 		return;
@@ -226,7 +266,7 @@ async function addModelQuick(args: string[], pi: ExtensionAPI, ctx: ExtensionCom
 		models: ids.map((id) => buildModel(id, false)),
 	});
 	try {
-		await apply(data, ctx);
+		applyAdd(pi, data, providerId);
 	} catch (err) {
 		ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
 		return;
@@ -239,7 +279,7 @@ async function addModelQuick(args: string[], pi: ExtensionAPI, ctx: ExtensionCom
 // /remove-model
 // ---------------------------------------------------------------------------
 
-async function removeModelWizard(ctx: ExtensionCommandContext): Promise<void> {
+async function removeModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
 	let data: ModelsJson;
 	try {
 		data = readModelsJson();
@@ -281,7 +321,7 @@ async function removeModelWizard(ctx: ExtensionCommandContext): Promise<void> {
 	}
 
 	try {
-		await apply(data, ctx);
+		applyRemove(pi, data, providerId);
 	} catch (err) {
 		ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
 		return;
@@ -344,7 +384,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("/remove-model needs an interactive UI. Edit ~/.pi/agent/models.json manually instead.", "error");
 				return;
 			}
-			await removeModelWizard(ctx);
+			await removeModelWizard(pi, ctx);
 		},
 	});
 
