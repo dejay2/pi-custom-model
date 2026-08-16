@@ -1,6 +1,7 @@
 {
   "name": "pi-custom-model",
-  "version": "1.0.1",
+  "version": "1.1.0",
+  "type": "module",
   "description": "pi extension: easily add custom models with custom endpoints and API keys (/add-model wizard)",
   "license": "MIT",
   "keywords": ["pi-package"],
@@ -16,6 +17,6 @@
     "extensions": ["./extensions/custom-model/index.ts"]
   },
   "scripts": {
-    "test": "node extensions/custom-model/test-store.ts"
+    "test": "node extensions/custom-model/test-store.ts && node extensions/custom-model/test-discover.ts && node extensions/custom-model/test-multiselect.ts"
   }
 }

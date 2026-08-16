@@ -1,0 +1,114 @@
+/**
+ * MultiSelect — a checkbox-style list for scoping which discovered models to add.
+ *
+ * Keys: ↑/↓ (or k/j) navigate • space toggle • a all/none • enter confirm • esc cancel.
+ * Enter with nothing selected selects the item under the cursor.
+ *
+ * Rendering is theme-injected so the interaction logic is unit-testable.
+ */
+
+export interface MultiSelectTheme {
+	accent(s: string): string;
+	muted(s: string): string;
+	dim(s: string): string;
+	bold(s: string): string;
+	warning(s: string): string;
+}
+
+export class MultiSelect {
+	private cursor = 0;
+	private readonly selected = new Set<number>();
+	private offset = 0;
+	private readonly items: string[];
+	private readonly maxVisible: number;
+	private readonly theme: MultiSelectTheme;
+	private readonly done: (result: string[] | null) => void;
+
+	constructor(
+		items: string[],
+		maxVisible: number,
+		theme: MultiSelectTheme,
+		done: (result: string[] | null) => void,
+	) {
+		this.items = items;
+		this.maxVisible = maxVisible;
+		this.theme = theme;
+		this.done = done;
+	}
+
+	/** Current selection as item values (for tests). */
+	get selectedItems(): string[] {
+		return this.items.filter((_, i) => this.selected.has(i));
+	}
+
+	handleInput(data: string): void {
+		switch (data) {
+			case "\x1b": // esc
+				this.done(null);
+				return;
+			case "\x1b[A": // up
+			case "k":
+				this.move(-1);
+				return;
+			case "\x1b[B": // down
+			case "j":
+				this.move(1);
+				return;
+			case " ": // toggle current
+				this.toggle(this.cursor);
+				return;
+			case "a": // all / none
+				if (this.selected.size === this.items.length) this.selected.clear();
+				else this.items.forEach((_, i) => this.selected.add(i));
+				return;
+			case "\r": // confirm
+			case "\n":
+				if (this.selected.size === 0) this.selected.add(this.cursor);
+				this.done(this.selectedItems);
+				return;
+		}
+	}
+
+	private move(delta: number): void {
+		const n = this.items.length;
+		if (n === 0) return;
+		this.cursor = (this.cursor + delta + n) % n;
+		if (this.cursor < this.offset) this.offset = this.cursor;
+		if (this.cursor >= this.offset + this.maxVisible) this.offset = this.cursor - this.maxVisible + 1;
+	}
+
+	private toggle(index: number): void {
+		if (this.selected.has(index)) this.selected.delete(index);
+		else this.selected.add(index);
+	}
+
+	render(_width: number): string[] {
+		const t = this.theme;
+		const lines: string[] = [];
+		lines.push(t.accent(t.bold(`Select models to add (${this.selected.size}/${this.items.length} chosen)`)));
+		lines.push("");
+
+		if (this.items.length === 0) {
+			lines.push(t.warning("  (no models)"));
+			return lines;
+		}
+
+		const end = Math.min(this.offset + this.maxVisible, this.items.length);
+		for (let i = this.offset; i < end; i++) {
+			const isCursor = i === this.cursor;
+			const box = this.selected.has(i) ? "[●]" : "[ ]";
+			const pointer = isCursor ? "❯" : " ";
+			const label = `${pointer} ${box} ${this.items[i]}`;
+			lines.push(isCursor ? t.accent(label) : label);
+		}
+		if (this.offset > 0 || end < this.items.length) {
+			lines.push(t.dim(`  (${this.offset + 1}–${end} of ${this.items.length})`));
+		}
+
+		lines.push("");
+		lines.push(t.muted("↑↓ navigate • space toggle • a all/none • enter confirm • esc cancel"));
+		return lines;
+	}
+
+	invalidate(): void {}
+}

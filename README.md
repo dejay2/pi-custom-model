@@ -32,10 +32,31 @@ pi remove git:github.com/dejay2/pi-custom-model
 
 | Command | Description |
 |---------|-------------|
-| `/add-model` | Interactive wizard: provider id → base URL → API type → API key → model id(s) → reasoning/context window |
+| `/add-model` | Interactive wizard: provider id → base URL → API type → API key → **fetches the model list from the endpoint** → scope which models to add (multi-select) → reasoning/context window. Falls back to manual id entry if the endpoint doesn't serve a list |
 | `/add-model <provider> <baseUrl> <modelId[,more]> [api] [apiKey]` | Quick one-liner, no prompts. `api` defaults to `openai-completions`, `apiKey` defaults to `keyless` |
 | `/remove-model` | Interactively remove a single model or an entire provider |
 | `/custom-models` | Show everything defined in `~/.pi/agent/models.json` |
+
+### Model discovery & scoping
+
+The wizard queries the endpoint's model listing and shows a multi-select so
+you can scope exactly which models get added — no typing model ids:
+
+- **OpenAI-compatible** (`openai-completions` / `openai-responses`):
+  `GET {baseUrl}/models` — works with Ollama, vLLM, LM Studio, llama.cpp,
+  OpenRouter, and most proxies. Context window / max tokens are picked up
+  automatically when the server advertises them.
+- **Anthropic-compatible** (`anthropic-messages`): `GET /v1/models` (tries
+  with and without a `/v1` suffix on the base URL).
+- **Google** (`google-generative-ai`): `GET {baseUrl}/models?key=…`,
+  `models/` prefixes stripped, token limits imported.
+
+Multi-select keys: `↑↓`/`jk` navigate · `space` toggle · `a` all/none ·
+`enter` confirm (with nothing chosen, confirms the highlighted model) ·
+`esc` cancel.
+
+If the endpoint is unreachable or doesn't answer with a model list, the
+wizard falls back to the old comma-separated manual entry.
 
 ### Example session
 
@@ -45,7 +66,8 @@ pi remove git:github.com/dejay2/pi-custom-model
   Base URL           → http://localhost:11434/v1
   API type           → openai-completions
   Auth               → No key needed
-  Model IDs          → llama3.1:8b, qwen2.5-coder:7b
+  (fetches every model on the endpoint…)
+  Select models      → [●] llama3.1:8b  [●] qwen2.5-coder:7b  [ ] …
   Reasoning?         → no
   Switch now?        → yes
 ```
@@ -79,9 +101,13 @@ re-reads it every time `/model` opens.
 
 ```
 extensions/custom-model/
-├── index.ts        # extension entry point (commands, wizard UI)
-├── store.ts        # models.json read/merge/remove helpers (no pi imports)
-└── test-store.ts   # unit tests
+├── index.ts             # extension entry point (commands, wizard UI)
+├── store.ts             # models.json read/merge/remove helpers (no pi imports)
+├── discover.ts          # endpoint /models fetching + parsing (no pi imports)
+├── multiselect.ts       # checkbox-list TUI component (theme-injected)
+├── test-store.ts        # unit tests
+├── test-discover.ts     # unit tests (incl. live mock-server fetches)
+└── test-multiselect.ts  # unit tests (interaction logic)
 ```
 
 Run the tests (Node ≥ 23, types are stripped natively):

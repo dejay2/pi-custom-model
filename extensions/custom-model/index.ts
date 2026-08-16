@@ -3,7 +3,11 @@
  *
  * Commands:
  *   /add-model            Interactive wizard: provider, endpoint, API type,
- *                         API key (literal / $ENV_VAR / keyless), model ids.
+ *                         API key (literal / $ENV_VAR / keyless), then the
+ *                         model list is fetched from the endpoint and you
+ *                         scope which models to add (multi-select).
+ *                         Falls back to manual id entry when the endpoint
+ *                         does not serve a model list.
  *   /add-model <provider> <baseUrl> <modelId[,more]> [api] [apiKey]
  *                         Quick non-interactive add (api defaults to
  *                         openai-completions, apiKey defaults to "keyless").
@@ -28,6 +32,8 @@ import {
 	type ModelsJson,
 	type ProviderEntry,
 } from "./store.ts";
+import { fetchModels, resolveApiKey, type DiscoveredModel } from "./discover.ts";
+import { MultiSelect } from "./multiselect.ts";
 
 const API_TYPES = [
 	"openai-completions — OpenAI Chat Completions (Ollama, vLLM, LM Studio, OpenRouter, most proxies)",
@@ -193,32 +199,90 @@ async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 		providerCfg = { baseUrl, api, apiKey, models: [] };
 	}
 
-	// 5. Model ids
-	const modelsRaw = await ctx.ui.input("Model ID(s), comma-separated", "e.g. llama3.1:8b, qwen2.5-coder:7b");
-	if (!modelsRaw) return;
-	const ids = parseModelIds(modelsRaw);
-	if (ids.length === 0) {
-		ctx.ui.notify("No model ids given.", "error");
-		return;
+	// 5. Model selection: discover from the endpoint, multi-select to scope.
+	//    Falls back to manual id entry when discovery is not possible.
+	const effective: ProviderEntry = existing ?? providerCfg;
+	let picked: DiscoveredModel[];
+	let discovered = false;
+
+	if (effective.baseUrl && effective.api) {
+		ctx.ui.notify(`Fetching model list from ${effective.baseUrl} …`, "info");
+		const models = await fetchModels({
+			baseUrl: effective.baseUrl,
+			api: effective.api,
+			apiKey: resolveApiKey(effective.apiKey),
+		});
+		if (models) {
+			discovered = true;
+			const ids = models.map((m) => m.id);
+			const chosen = await ctx.ui.custom<string[] | null>((tui, theme, _kb, done) => {
+				const ms = new MultiSelect(
+					ids,
+					Math.min(ids.length, 12),
+					{
+						accent: (s: string) => theme.fg("accent", s),
+						muted: (s: string) => theme.fg("muted", s),
+						dim: (s: string) => theme.fg("dim", s),
+						bold: (s: string) => theme.bold(s),
+						warning: (s: string) => theme.fg("warning", s),
+					},
+					done,
+				);
+				return {
+					render: (w: number) => ms.render(w),
+					invalidate: () => ms.invalidate(),
+					handleInput: (data: string) => {
+						ms.handleInput(data);
+						tui.requestRender();
+					},
+				};
+			});
+			if (!chosen || chosen.length === 0) return;
+			picked = models.filter((m) => chosen.includes(m.id));
+		} else {
+			ctx.ui.notify("Could not fetch a model list from the endpoint — enter model IDs manually.", "warning");
+			picked = [];
+		}
+	} else {
+		picked = [];
+	}
+
+	if (!discovered) {
+		const modelsRaw = await ctx.ui.input("Model ID(s), comma-separated", "e.g. llama3.1:8b, qwen2.5-coder:7b");
+		if (!modelsRaw) return;
+		const ids = parseModelIds(modelsRaw);
+		if (ids.length === 0) {
+			ctx.ui.notify("No model ids given.", "error");
+			return;
+		}
+		picked = ids.map((id) => ({ id }));
 	}
 
 	// 6. Reasoning + context window
 	const reasoning = await ctx.ui.confirm(
 		"Reasoning / thinking support?",
-		`Do ${ids.length > 1 ? "these models" : "this model"} support extended thinking?`,
+		`Do ${picked.length > 1 ? "these models" : "this model"} support extended thinking?`,
 	);
-	const ctxRaw = (await ctx.ui.input("Context window in tokens (optional)", "press Enter for default 128000"))?.trim();
+	// Only prompt when at least one picked model carries no discovered context window.
 	let contextWindow: number | undefined;
-	if (ctxRaw) {
-		const n = Number(ctxRaw);
-		if (!Number.isFinite(n) || n <= 0) {
-			ctx.ui.notify(`"${ctxRaw}" is not a valid token count.`, "error");
-			return;
+	if (picked.some((m) => !m.contextWindow)) {
+		const ctxRaw = (
+			await ctx.ui.input("Context window in tokens (optional)", "press Enter to keep discovered/default values")
+		)?.trim();
+		if (ctxRaw) {
+			const n = Number(ctxRaw);
+			if (!Number.isFinite(n) || n <= 0) {
+				ctx.ui.notify(`"${ctxRaw}" is not a valid token count.`, "error");
+				return;
+			}
+			contextWindow = Math.round(n);
 		}
-		contextWindow = Math.round(n);
 	}
 
-	providerCfg.models = ids.map((id) => buildModel(id, reasoning, contextWindow));
+	providerCfg.models = picked.map((m) => ({
+		...buildModel(m.id, reasoning, m.contextWindow ?? contextWindow),
+		...(m.maxTokens ? { maxTokens: m.maxTokens } : {}),
+	}));
 	upsertProvider(data, providerId, providerCfg);
 	try {
 		applyAdd(pi, data, providerId);
@@ -228,10 +292,10 @@ async function addModelWizard(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 	}
 
 	ctx.ui.notify(
-		`Added ${ids.map((id) => `${providerId}/${id}`).join(", ")} — saved to models.json and live now.`,
+		`Added ${picked.map((m) => `${providerId}/${m.id}`).join(", ")} — saved to models.json and live now.`,
 		"info",
 	);
-	await offerSwitch(pi, ctx, providerId, ids[0]);
+	await offerSwitch(pi, ctx, providerId, picked[0].id);
 }
 
 /** Quick form: /add-model <provider> <baseUrl> <modelId[,more]> [api] [apiKey] */
